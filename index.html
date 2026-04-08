@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI 업무 멘토</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; background: #f0f4f8; color: #1e293b; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #f0f4f8; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ─── DESIGN TOKENS ───────────────────────────────────────────────────────────
+const C = {
+  primary: '#0f2040', secondary: '#2563eb',
+  bg: '#f0f4f8', card: '#ffffff', border: '#e2e8f0',
+  text: '#1e293b', textMuted: '#64748b',
+  제거: '#dc2626', 통합: '#d97706', 재배치: '#2563eb', AI전환: '#16a34a',
+  상: '#16a34a', 중: '#d97706', 하: '#dc2626',
+  상bg: '#dcfce7', 중bg: '#fef9c3', 하bg: '#fee2e2',
+  본인: '#1d4ed8', 유관부서: '#7c3aed', 상위결재: '#b45309',
+  본인bg: '#dbeafe', 유관부서bg: '#ede9fe', 상위결재bg: '#fef3c7',
+};
+
+// ─── GOOGLE AI STUDIO API (Gemma 4) ──────────────────────────────────────────
+const GEMMA_MODEL = 'gemma-3-27b-it'; // Gemma 4 출시 시: 'gemma-4-27b-it'
+
+async function callClaude(apiKey, system, user, maxTokens = 4096) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMMA_MODEL}:generateContent?key=${apiKey}`;
+  // Gemma는 systemInstruction 미지원 → system+user 합쳐서 전송
+  const combinedText = `[지시사항]\n${system}\n\n[입력]\n${user}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: combinedText }] }],
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.7 },
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
+  return data.candidates[0].content.parts[0].text;
+}
+
+function extractJson(text) {
+  const m = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const raw = m ? m[1].trim() : text.trim();
+  return JSON.parse(raw);
+}
+
+// ─── SHARED COMPONENTS ────────────────────────────────────────────────────────
+function Spinner({ size = 24, color = C.secondary }) {
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: '50%',
+      border: `3px solid ${color}30`, borderTopColor: color,
+      animation: 'spin 0.8s linear infinite', display: 'inline-block',
+    }} />
+  );
+}
+
+function Badge({ label, color, bg, size = 12 }) {
+  return (
+    <span style={{
+      display: 'inline-block', padding: '2px 8px', borderRadius: 20,
+      fontSize: size, fontWeight: 600, color, background: bg || color + '20',
+      whiteSpace: 'nowrap',
+    }}>{label}</span>
+  );
+}
+
+function Button({ children, onClick, disabled, variant = 'primary', size = 'md', style: sx }) {
+  const base = {
+    border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+    fontFamily: 'inherit', fontWeight: 600, borderRadius: 8,
+    transition: 'all 0.15s', display: 'inline-flex', alignItems: 'center',
+    gap: 6, opacity: disabled ? 0.45 : 1,
+  };
+  const sizes = { sm: { padding: '6px 12px', fontSize: 13 }, md: { padding: '10px 18px', fontSize: 14 }, lg: { padding: '13px 24px', fontSize: 15 } };
+  const variants = {
+    primary: { background: C.secondary, color: '#fff' },
+    outline: { background: 'transparent', color: C.secondary, border: `1.5px solid ${C.secondary}` },
+    danger: { background: C.제거, color: '#fff' },
+    ghost: { background: '#f1f5f9', color: C.text },
+  };
+  return (
+    <button onClick={disabled ? undefined : onClick} style={{ ...base, ...sizes[size], ...variants[variant], ...sx }}>
+      {children}
+    </button>
+  );
+}
+
+function Card({ children, style: sx }) {
+  return (
+    <div style={{
+      background: C.card, borderRadius: 12,
+      boxShadow: '0 1px 4px rgba(0,0,0,0.08)', border: `1px solid ${C.border}`,
+      ...sx,
+    }}>{children}</div>
+  );
+}
+
+function ErrorBanner({ message, onDismiss }) {
+  if (!message) return null;
+  return (
+    <div style={{
+      background: '#fef2f2', border: `1px solid #fecaca`, borderRadius: 8,
+      padding: '12px 16px', marginBottom: 16, display: 'flex',
+      justifyContent: 'space-between', alignItems: 'flex-start', animation: 'fadeIn 0.2s',
+    }}>
+      <div>
+        <span style={{ color: C.제거, fontWeight: 700, fontSize: 13 }}>오류</span>
+        <p style={{ color: '#7f1d1d', fontSize: 13, marginTop: 4 }}>{message}</p>
+      </div>
+      <button onClick={onDismiss} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', fontSize: 18, lineHeight: 1 }}>✕</button>
+    </div>
+  );
+}
+
+// ─── PROGRESS BAR ─────────────────────────────────────────────────────────────
+function ProgressBar({ current, onNavigate }) {
+  const steps = ['업무 입력', '현황 진단', '워크플로 재설계', 'Agent 설계'];
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 0, padding: '0 24px' }}>
+      {steps.map((s, i) => {
+        const idx = i + 1;
+        const done = idx < current;
+        const active = idx === current;
+        return (
+          <React.Fragment key={idx}>
+            <div
+              onClick={() => done && onNavigate(idx)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
+                borderRadius: 8, cursor: done ? 'pointer' : 'default',
+                background: active ? C.secondary + '15' : 'transparent',
+                transition: 'background 0.2s',
+              }}
+            >
+              <div style={{
+                width: 28, height: 28, borderRadius: '50%', display: 'flex',
+                alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700,
+                background: active ? C.secondary : done ? '#10b981' : '#e2e8f0',
+                color: (active || done) ? '#fff' : '#94a3b8',
+                flexShrink: 0,
+              }}>
+                {done ? '✓' : idx}
+              </div>
+              <span style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? C.secondary : done ? '#10b981' : '#94a3b8', whiteSpace: 'nowrap' }}>
+                {s}
+              </span>
+            </div>
+            {i < steps.length - 1 && (
+              <div style={{ flex: 1, height: 2, background: done ? '#10b981' : C.border, minWidth: 16 }} />
+            )}
+          </React.Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── HEADER ───────────────────────────────────────────────────────────────────
+function Header({ current, onNavigate }) {
+  return (
+    <div style={{ background: C.primary, padding: '0 24px', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
+      <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 0 10px' }}>
+          <div style={{ fontSize: 22, fontWeight: 700, color: '#fff', letterSpacing: -0.5 }}>
+            🧠 AI 업무 멘토
+          </div>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>Agentic Workflow Coach · Gemma</div>
+        </div>
+        <ProgressBar current={current} onNavigate={onNavigate} />
+        <div style={{ height: 4 }} />
+      </div>
+    </div>
+  );
+}
+
+// ─── LAYER 0: API KEY SCREEN ──────────────────────────────────────────────────
+function ApiKeyScreen({ onSubmit }) {
+  const [key, setKey] = useState('');
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ minHeight: '100vh', background: C.primary, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+      <div style={{ background: '#fff', borderRadius: 16, padding: 40, width: '100%', maxWidth: 440, boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+        <div style={{ textAlign: 'center', marginBottom: 32 }}>
+          <div style={{ fontSize: 48, marginBottom: 12 }}>🧠</div>
+          <h1 style={{ fontSize: 24, fontWeight: 700, color: C.primary, marginBottom: 8 }}>AI 업무 멘토</h1>
+          <p style={{ fontSize: 14, color: C.textMuted, lineHeight: 1.6 }}>
+            업무를 나열하면 AI가 분석·재설계·Agent 설계까지 해드립니다
+          </p>
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ fontSize: 13, fontWeight: 600, color: C.text, display: 'block', marginBottom: 6 }}>
+            Google AI Studio API Key
+          </label>
+          <div style={{ position: 'relative' }}>
+            <input
+              type={show ? 'text' : 'password'}
+              value={key}
+              onChange={e => setKey(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && key.trim() && onSubmit(key.trim())}
+              placeholder="AIza..."
+              style={{
+                width: '100%', padding: '11px 44px 11px 14px', borderRadius: 8,
+                border: `1.5px solid ${C.border}`, fontSize: 14, fontFamily: 'monospace',
+                outline: 'none', color: C.text,
+              }}
+            />
+            <button
+              onClick={() => setShow(s => !s)}
+              style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: C.textMuted }}
+            >
+              {show ? '🙈' : '👁'}
+            </button>
+          </div>
+        </div>
+        <div style={{ background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '10px 14px', marginBottom: 20, fontSize: 12, color: '#92400e' }}>
+          ⚠️ API 키는 브라우저 메모리에만 보관되며 서버로 전송되지 않습니다. 프로토타입 용도로만 사용하세요.
+        </div>
+        <Button onClick={() => key.trim() && onSubmit(key.trim())} disabled={!key.trim()} size="lg" style={{ width: '100%', justifyContent: 'center' }}>
+          시작하기 →
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ─── LAYER 1: TASK INPUT & ANALYSIS ──────────────────────────────────────────
+const SAMPLE_TASKS = `매출 일보 작성 및 팀장 보고
+주간 재고 현황 Excel 정리
+월말 매출 마감 및 ERP 입력
+신규 거래처 계약서 검토 요청
+판촉 행사 기획안 작성
+경쟁사 가격 조사 및 정리
+팀 주간 회의 준비 및 회의록 작성
+고객 클레임 접수 및 유관부서 전달
+월별 손익 보고서 작성
+거래처 방문 일정 조율
+신제품 판매 데이터 분석
+분기 실적 보고 자료 준비`;
+
+const L1_SYSTEM = `당신은 대기업 업무 분석 전문가입니다. 사용자가 나열한 업무 목록을 분석하여 아래 JSON 배열로 반환하세요.
+순수 JSON만 반환하고 마크다운 코드블록을 사용하지 마세요.
+
+[
+  {
+    "세부": "원래 업무명 그대로",
+    "대분류": "관리업무|본부활동|내근업무|현장활동 중 하나",
+    "중분류": "매출관리|납품관리|재고관리|손익관리|행사관리|진열관리|계약관리|지표관리|마스터관리|품의마감|소통|현장활동|기타 중 하나",
+    "소분류": "2~4글자",
+    "업무구분": "주요|단순",
+    "주기": "일1회|주1회|월1회|월2회|분기1회|년1회|수시|시즌",
+    "소요시간": 정수(분단위),
+    "현재도구": "최대 2개 쉼표구분",
+    "AI가능성": "상|중|하",
+    "AI가능성_이유": "15자 이내"
+  }
+]
+
+AI가능성 판단:
+- 상: 반복 데이터 입력, 리포트 자동생성, 정형 문서, 모니터링
+- 중: 분석 보조, 초안 생성, 데이터 집계
+- 하: 대면 협상, 관계 관리, 현장 판단`;
+
+function TaskRow({ task, idx, onChange, onDelete }) {
+  const [focused, setFocused] = useState(false);
+
+  const cell = (field, opts = {}) => {
+    const val = task[field] ?? '';
+    if (opts.select) {
+      return (
+        <select
+          value={val}
+          onChange={e => onChange(idx, field, e.target.value)}
+          style={{
+            width: '100%', border: 'none', background: 'transparent', fontSize: 13,
+            fontFamily: 'inherit', cursor: 'pointer', outline: 'none', color: val ? C.text : '#ef4444',
+            padding: '2px 0',
+          }}
+        >
+          <option value="">-- 선택 --</option>
+          {opts.options.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      );
+    }
+    return (
+      <input
+        type={opts.type || 'text'}
+        value={val}
+        onChange={e => onChange(idx, field, opts.type === 'number' ? Number(e.target.value) : e.target.value)}
+        style={{
+          width: '100%', border: 'none', background: 'transparent', fontSize: 13,
+          fontFamily: 'inherit', outline: 'none', color: C.text, padding: '2px 0',
+          minWidth: opts.minWidth || 60,
+        }}
+      />
+    );
+  };
+
+  const decisionColor = task['의사결정주체'] ? C[task['의사결정주체']] : '#ef4444';
+  const decisionBg   = task['의사결정주체'] ? C[task['의사결정주체'] + 'bg'] : '#fee2e2';
+
+  return (
+    <tr style={{ background: focused ? '#f8fafc' : '#fff', transition: 'background 0.1s' }}
+        onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}>
+      <td style={tdS}>{idx + 1}</td>
+      <td style={{ ...tdS, minWidth: 140, fontWeight: 500 }}>{cell('세부')}</td>
+      <td style={tdS}>{cell('대분류', { select: true, options: ['관리업무','본부활동','내근업무','현장활동'] })}</td>
+      <td style={tdS}>{cell('중분류', { select: true, options: ['매출관리','납품관리','재고관리','손익관리','행사관리','진열관리','계약관리','지표관리','마스터관리','품의마감','소통','현장활동','기타'] })}</td>
+      <td style={tdS}>{cell('소분류')}</td>
+      <td style={tdS}>{cell('업무구분', { select: true, options: ['주요','단순'] })}</td>
+      <td style={tdS}>{cell('주기', { select: true, options: ['일1회','주1회','월1회','월2회','분기1회','년1회','수시','시즌'] })}</td>
+      <td style={tdS}>{cell('소요시간', { type: 'number', minWidth: 50 })}</td>
+      <td style={tdS}>{cell('현재도구')}</td>
+      <td style={tdS}>
+        <Badge
+          label={task['AI가능성'] || '-'}
+          color={C[task['AI가능성']] || C.textMuted}
+          bg={C[task['AI가능성'] + 'bg'] || '#f1f5f9'}
+        />
+      </td>
+      <td style={{ ...tdS, fontSize: 11, color: C.textMuted, maxWidth: 100 }}>{task['AI가능성_이유']}</td>
+      <td style={{ ...tdS, minWidth: 110 }}>
+        <select
+          value={task['의사결정주체'] || ''}
+          onChange={e => onChange(idx, '의사결정주체', e.target.value)}
+          style={{
+            border: `1.5px solid ${decisionColor}40`, borderRadius: 6, padding: '3px 6px',
+            fontSize: 12, fontWeight: 600, color: decisionColor, background: decisionBg,
+            fontFamily: 'inherit', cursor: 'pointer', outline: 'none',
+          }}
+        >
+          <option value="">필수 선택 *</option>
+          <option value="본인">본인</option>
+          <option value="유관부서">유관부서</option>
+          <option value="상위결재">상위결재</option>
+        </select>
+      </td>
+      <td style={{ ...tdS, textAlign: 'center' }}>
+        <button onClick={() => onDelete(idx)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 16, color: '#cbd5e1', padding: 4 }}
+          onMouseEnter={e => e.target.style.color = C.제거}
+          onMouseLeave={e => e.target.style.color = '#cbd5e1'}>✕</button>
+      </td>
+    </tr>
+  );
+}
+
+const tdS = { padding: '8px 10px', borderBottom: '1px solid #f1f5f9', verticalAlign: 'middle', fontSize: 13 };
+const thS = { padding: '10px 10px', background: '#f8fafc', fontSize: 12, fontWeight: 700, color: C.textMuted, borderBottom: `2px solid ${C.border}`, whiteSpace: 'nowrap', textAlign: 'left' };
+
+function Layer1({ apiKey, onConfirm }) {
+  const [text, setText] = useState('');
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [loadingMsg, setLoadingMsg] = useState('');
+
+  const msgs = ['업무 목록 분석 중...', '카테고리 분류 중...', '소요시간·도구 추정 중...', 'AI 자동화 가능성 평가 중...'];
+  let msgIdx = 0;
+
+  const analyze = async () => {
+    if (!text.trim()) return;
+    setLoading(true); setError(''); setRows([]);
+    setLoadingMsg(msgs[0]);
+    const timer = setInterval(() => { msgIdx = (msgIdx + 1) % msgs.length; setLoadingMsg(msgs[msgIdx]); }, 1800);
+    try {
+      const raw = await callClaude(apiKey, L1_SYSTEM, text.trim());
+      const parsed = extractJson(raw);
+      const withIds = parsed.map((r, i) => ({ ...r, id: `task_${String(i+1).padStart(3,'0')}`, '의사결정주체': '' }));
+      setRows(withIds);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      clearInterval(timer);
+      setLoading(false);
+    }
+  };
+
+  const handleChange = (idx, field, val) => {
+    setRows(prev => prev.map((r, i) => i === idx ? { ...r, [field]: val } : r));
+  };
+
+  const addRow = () => {
+    const newRow = {
+      id: `task_${Date.now()}`, 세부: '', 대분류: '', 중분류: '', 소분류: '',
+      업무구분: '단순', 주기: '수시', 소요시간: 30, 현재도구: '',
+      AI가능성: '중', AI가능성_이유: '', 의사결정주체: ''
+    };
+    setRows(prev => [...prev, newRow]);
+  };
+
+  const deleteRow = idx => setRows(prev => prev.filter((_, i) => i !== idx));
+
+  const allFilled = rows.length > 0 && rows.every(r => r['의사결정주체']);
+  const missingCount = rows.filter(r => !r['의사결정주체']).length;
+
+  const handleConfirm = () => {
+    if (!allFilled) return;
+    onConfirm({ confirmedAt: new Date().toISOString(), tasks: rows });
+  };
+
+  return (
+    <div style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 22, fontWeight: 700, color: C.primary, marginBottom: 6 }}>① 업무 나열 및 분석</h2>
+        <p style={{ fontSize: 14, color: C.textMuted }}>현재 담당하는 업무를 한 줄에 하나씩 자유롭게 입력하세요.</p>
+      </div>
+
+      <ErrorBanner message={error} onDismiss={() => setError('')} />
+
+      {/* Input area */}
+      <Card style={{ padding: 24, marginBottom: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <label style={{ fontSize: 14, fontWeight: 600, color: C.text }}>업무 목록 입력</label>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {text.trim() && (
+              <span style={{ fontSize: 12, color: C.textMuted }}>
+                {text.trim().split('\n').filter(l => l.trim()).length}개 업무
+              </span>
+            )}
+            <Button variant="ghost" size="sm" onClick={() => setText(SAMPLE_TASKS)}>샘플 데이터</Button>
+            <Button variant="ghost" size="sm" onClick={() => setText('')}>초기화</Button>
+          </div>
+        </div>
+        <textarea
+          value={text}
+          onChange={e => setText(e.target.value)}
+          placeholder={'예:\n매출 일보 작성 및 팀장 보고\n주간 재고 현황 Excel 정리\n월말 매출 마감 및 ERP 입력\n...'}
+          rows={8}
+          style={{
+            width: '100%', padding: '12px 14px', borderRadius: 8, border: `1.5px solid ${C.border}`,
+            fontSize: 14, fontFamily: 'inherit', resize: 'vertical', outline: 'none',
+            color: C.text, lineHeight: 1.7, transition: 'border-color 0.15s',
+          }}
+          onFocus={e => e.target.style.borderColor = C.secondary}
+          onBlur={e => e.target.style.borderColor = C.border}
+        />
+        <div style={{ marginTop: 14, display: 'flex', justifyContent: 'flex-end' }}>
+          <Button onClick={analyze} disabled={!text.trim() || loading} size="lg">
+            {loading ? <><Spinner size={16} color="#fff" /> {loadingMsg}</> : '🔍 AI 분석 시작'}
+          </Button>
+        </div>
+      </Card>
+
+      {/* Results table */}
+      {rows.length > 0 && (
+        <div style={{ animation: 'fadeIn 0.3s' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div>
+              <h3 style={{ fontSize: 16, fontWeight: 700, color: C.text }}>분석 결과 — {rows.length}개 업무</h3>
+              {missingCount > 0 && (
+                <p style={{ fontSize: 13, color: C.제거, marginTop: 4 }}>
+                  ⚠️ <strong>의사결정주체</strong> 미입력: {missingCount}건 (확정 전 필수 완성)
+                </p>
+              )}
+            </div>
+            <Button variant="ghost" size="sm" onClick={addRow}>+ 행 추가</Button>
+          </div>
+
+          <Card style={{ overflow: 'auto', marginBottom: 20 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1100 }}>
+              <thead>
+                <tr>
+                  {['#','세부 업무','대분류','중분류','소분류','구분','주기','시간(분)','현재도구','AI가능성','이유','의사결정주체*','삭제'].map(h => (
+                    <th key={h} style={thS}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <TaskRow key={row.id} task={row} idx={idx} onChange={handleChange} onDelete={deleteRow} />
+                ))}
+              </tbody>
+            </table>
+          </Card>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+            <Button variant="outline" onClick={analyze} disabled={loading}>재분석</Button>
+            <Button
+              onClick={handleConfirm}
+              disabled={!allFilled}
+              size="lg"
+              style={{ background: allFilled ? '#10b981' : undefined }}
+            >
+              {allFilled ? '✅ 분석 확정 → 진단 대시보드' : `의사결정주체 ${missingCount}건 미입력`}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── LAYER 2: DIAGNOSIS DASHBOARD ────────────────────────────────────────────
+const L2_SYSTEM = `당신은 업무 혁신 컨설턴트입니다. 확정된 업무 목록을 분석하여 아래 JSON 구조로 진단 데이터를 생성하세요.
+순수 JSON만 반환하세요 (마크다운 코드블록 없음).
+
+{
+  "진단요약": "2~3문장 핵심 진단",
+  "주요문제": ["문제1", "문제2", "문제3"],
+  "즉시가능": ["업무명1", "업무명2"],
+  "단기과제": ["업무명1", "업무명2"],
+  "장기과제": ["업무명1"]
+}`;
+
+function DonutChart({ data, label }) {
+  const total = data.reduce((s, d) => s + d.value, 0);
+  if (total === 0) return null;
+  const r = 70, cx = 90, cy = 90, sw = 22, circ = 2 * Math.PI * r;
+  let cumPct = 0;
+  const segments = data.map(d => {
+    const pct = d.value / total;
+    const dash = circ * pct;
+    const gap  = circ - dash;
+    const offset = circ * (1 - cumPct);
+    cumPct += pct;
+    return { ...d, dash, gap, offset, pct };
+  });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+      <svg viewBox="0 0 180 180" width={160} height={160}>
+        {segments.map((s, i) => (
+          <circle key={i} cx={cx} cy={cy} r={r} fill="none"
+            stroke={s.color} strokeWidth={sw}
+            strokeDasharray={`${s.dash} ${s.gap}`}
+            strokeDashoffset={s.offset}
+            style={{ transform: 'rotate(-90deg)', transformOrigin: `${cx}px ${cy}px` }}
+          />
+        ))}
+        <text x={cx} y={cy - 8} textAnchor="middle" fontSize="22" fontWeight="700" fill={C.primary}>{total}</text>
+        <text x={cx} y={cy + 12} textAnchor="middle" fontSize="11" fill={C.textMuted}>{label}</text>
+      </svg>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', justifyContent: 'center' }}>
+        {data.map((d, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 12 }}>
+            <div style={{ width: 10, height: 10, borderRadius: 2, background: d.color }} />
+            <span style={{ color: C.text }}>{d.label}</span>
+            <span style={{ color: C.textMuted, fontWeight: 600 }}>{Math.round(d.value / total * 100)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HBarChart({ data }) {
+  const max = Math.max(...data.map(d => d.value), 1);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {data.map((d, i) => (
+        <div key={i}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3, fontSize: 12 }}>
+            <span style={{ color: C.text, maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.label}</span>
+            <span style={{ color: C.textMuted, fontWeight: 600 }}>{d.value}분</span>
+          </div>
+          <div style={{ height: 10, background: '#f1f5f9', borderRadius: 5, overflow: 'hidden' }}>
+            <div style={{
+              height: '100%', width: `${(d.value / max) * 100}%`,
+              background: d.color || C.secondary, borderRadius: 5,
+              transition: 'width 0.6s ease',
+            }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ScatterPlot({ tasks }) {
+  const W = 260, H = 220, PAD = 30;
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ maxWidth: W }}>
+        {/* Grid */}
+        <line x1={PAD} y1={H/2} x2={W-PAD} y2={H/2} stroke={C.border} strokeWidth="1" strokeDasharray="4"/>
+        <line x1={W/2} y1={PAD} x2={W/2} y2={H-PAD} stroke={C.border} strokeWidth="1" strokeDasharray="4"/>
+        {/* Quadrant labels */}
+        <text x={(PAD + W/2)/2} y={PAD+12} textAnchor="middle" fontSize="9" fill="#10b981">빠른 성과</text>
+        <text x={(W/2 + W-PAD)/2} y={PAD+12} textAnchor="middle" fontSize="9" fill="#f59e0b">주요 과제</text>
+        <text x={(PAD + W/2)/2} y={H-PAD-4} textAnchor="middle" fontSize="9" fill={C.textMuted}>채우기</text>
+        <text x={(W/2 + W-PAD)/2} y={H-PAD-4} textAnchor="middle" fontSize="9" fill={C.제거}>재고</text>
+        {/* Axes */}
+        <text x={W/2} y={H-4} textAnchor="middle" fontSize="9" fill={C.textMuted}>실행 난이도 →</text>
+        <text x={8} y={H/2} textAnchor="middle" fontSize="9" fill={C.textMuted} transform={`rotate(-90,8,${H/2})`}>효과 크기 →</text>
+        {/* Points: x = (주기복잡도), y = (소요시간 역비례 + AI가능성) */}
+        {tasks.map((t, i) => {
+          const aiMap = { 상: 85, 중: 50, 하: 20 };
+          const cycleMap = { 일1회: 20, 주1회: 35, 월1회: 50, 월2회: 55, 수시: 70, 분기1회: 60, 시즌: 75, 년1회: 65 };
+          const xPct = (cycleMap[t.주기] || 50) / 100;
+          const yPct = ((aiMap[t.AI가능성] || 50) + Math.min(t.소요시간 / 3, 40)) / 140;
+          const x = PAD + xPct * (W - 2*PAD);
+          const y = (H - PAD) - yPct * (H - 2*PAD);
+          const col = t.업무구분 === '주요' ? C.secondary : '#94a3b8';
+          return (
+            <g key={t.id}>
+              <circle cx={x} cy={y} r={5} fill={col} opacity={0.75} />
+              <title>{t.세부}</title>
+            </g>
+          );
+        })}
+      </svg>
+      <div style={{ display: 'flex', gap: 12, marginTop: 6, fontSize: 11 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: C.secondary }} /><span>주요업무</span></div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}><div style={{ width: 8, height: 8, borderRadius: '50%', background: '#94a3b8' }} /><span>단순업무</span></div>
+      </div>
+    </div>
+  );
+}
+
+function Layer2({ confirmedData, apiKey, diagnosis, setDiagnosis, onNext, onBack }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const tasks = confirmedData.tasks;
+
+  useEffect(() => {
+    if (!diagnosis) loadDiagnosis();
+  }, []);
+
+  const loadDiagnosis = async () => {
+    setLoading(true); setError('');
+    try {
+      const raw = await callClaude(apiKey, L2_SYSTEM, JSON.stringify(tasks));
+      setDiagnosis(extractJson(raw));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Computed stats
+  const 주요비율 = Math.round(tasks.filter(t => t.업무구분 === '주요').length / tasks.length * 100);
+  const AI상 = tasks.filter(t => t.AI가능성 === '상');
+  const AI중 = tasks.filter(t => t.AI가능성 === '중');
+  const AI하 = tasks.filter(t => t.AI가능성 === '하');
+  const top5 = [...tasks].sort((a, b) => b.소요시간 - a.소요시간).slice(0, 5);
+  const decisionDist = ['본인','유관부서','상위결재'].map(k => ({
+    label: k, value: tasks.filter(t => t.의사결정주체 === k).length, color: C[k],
+  }));
+  const taskTypeDist = [
+    { label: '주요업무', value: tasks.filter(t => t.업무구분 === '주요').length, color: C.secondary },
+    { label: '단순업무', value: tasks.filter(t => t.업무구분 === '단순').length, color: '#94a3b8' },
+  ];
+
+  return (
+    <div style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: C.primary, marginBottom: 6 }}>② 현황 진단 대시보드</h2>
+          <p style={{ fontSize: 14, color: C.textMuted }}>확정된 {tasks.length}개 업무 기반 분석</p>
+        </div>
+        <Button variant="ghost" size="sm" onClick={onBack}>← 업무 수정</Button>
+      </div>
+
+      <ErrorBanner message={error} onDismiss={() => setError('')} />
+
+      {loading && (
+        <div style={{ textAlign: 'center', padding: '60px 0' }}>
+          <Spinner size={40} /><p style={{ marginTop: 16, color: C.textMuted }}>AI 진단 분석 중...</p>
+        </div>
+      )}
+
+      {!loading && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 20, marginBottom: 24 }}>
+
+          {/* Panel A — 현황 진단 */}
+          <Card style={{ padding: 22 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: C.primary, marginBottom: 18, paddingBottom: 10, borderBottom: `1px solid ${C.border}` }}>
+              📊 현황 진단
+            </h3>
+            <div style={{ marginBottom: 20 }}>
+              <p style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 10 }}>업무 구조 비율</p>
+              <DonutChart data={taskTypeDist} label="업무" />
+            </div>
+            <div style={{ marginBottom: 20 }}>
+              <p style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 10 }}>의사결정주체 분포</p>
+              <DonutChart data={decisionDist} label="업무" />
+            </div>
+            {diagnosis && (
+              <div style={{ background: '#f0f9ff', borderRadius: 8, padding: 12, marginTop: 8 }}>
+                <p style={{ fontSize: 12, fontWeight: 700, color: '#0369a1', marginBottom: 6 }}>💡 AI 진단 요약</p>
+                <p style={{ fontSize: 13, color: '#0c4a6e', lineHeight: 1.6 }}>{diagnosis.진단요약}</p>
+              </div>
+            )}
+          </Card>
+
+          {/* Panel B — AI 도입 가능 업무 */}
+          <Card style={{ padding: 22 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: C.primary, marginBottom: 18, paddingBottom: 10, borderBottom: `1px solid ${C.border}` }}>
+              🤖 AI 도입 가능 업무
+            </h3>
+            {[
+              { label: '상 — 즉시 자동화', items: AI상, color: C.상, bg: C.상bg },
+              { label: '중 — AI 보조 가능', items: AI중, color: C.중, bg: C.중bg },
+              { label: '하 — 인간 고유 영역', items: AI하, color: C.하, bg: C.하bg },
+            ].map(({ label, items, color, bg }) => (
+              <div key={label} style={{ marginBottom: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color }}>{label}</span>
+                  <Badge label={`${items.length}건`} color={color} bg={bg} />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  {items.slice(0, 4).map(t => (
+                    <div key={t.id} style={{ fontSize: 12, padding: '4px 8px', background: bg, borderRadius: 6, color }}>
+                      {t.세부}
+                    </div>
+                  ))}
+                  {items.length > 4 && <div style={{ fontSize: 12, color: C.textMuted, paddingLeft: 8 }}>+{items.length - 4}개 더...</div>}
+                </div>
+              </div>
+            ))}
+            <div style={{ background: '#f0fdf4', borderRadius: 8, padding: 10, marginTop: 8 }}>
+              <p style={{ fontSize: 12, color: '#166534', fontWeight: 600 }}>
+                ✅ AI가능성 상 업무 {AI상.length}건 자동화 시 주요업무 집중도 향상 가능
+              </p>
+            </div>
+          </Card>
+
+          {/* Panel C — 재설계 방향 */}
+          <Card style={{ padding: 22 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: C.primary, marginBottom: 18, paddingBottom: 10, borderBottom: `1px solid ${C.border}` }}>
+              🗺 재설계 방향
+            </h3>
+            <p style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 8 }}>시간 점유 Top 5</p>
+            <HBarChart data={top5.map(t => ({
+              label: t.세부,
+              value: t.소요시간,
+              color: t.업무구분 === '주요' ? C.secondary : '#94a3b8',
+            }))} />
+            <div style={{ height: 1, background: C.border, margin: '16px 0' }} />
+            <p style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 8 }}>업무 분포 매트릭스</p>
+            <ScatterPlot tasks={tasks} />
+            {diagnosis && (
+              <div style={{ marginTop: 12 }}>
+                <p style={{ fontSize: 12, fontWeight: 700, color: C.textMuted, marginBottom: 8 }}>핵심 처방 방향</p>
+                {[
+                  { label: '지금 당장', items: diagnosis.즉시가능, color: '#10b981' },
+                  { label: '1~3개월 내', items: diagnosis.단기과제, color: C.중 },
+                  { label: '장기 과제', items: diagnosis.장기과제, color: C.textMuted },
+                ].map(({ label, items, color }) => items?.length > 0 && (
+                  <div key={label} style={{ marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color }}>{label}</span>
+                    <p style={{ fontSize: 12, color: C.text, marginTop: 2 }}>{items.slice(0,2).join(', ')}{items.length > 2 ? ` 외 ${items.length-2}건` : ''}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </div>
+      )}
+
+      {!loading && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button onClick={onNext} size="lg">
+            🔧 Workflow 재설계 보기 →
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── LAYER 3: WORKFLOW REDESIGN ───────────────────────────────────────────────
+const L3_SYSTEM = `당신은 업무 혁신 처방 전문가입니다. 업무 목록과 진단 데이터를 바탕으로 처방을 제시하세요.
+처방 유형: 제거|통합|재배치|AI전환
+순수 JSON 배열만 반환하세요 (마크다운 코드블록 없음).
+
+[
+  {
+    "task_id": "task_001",
+    "세부": "업무명",
+    "처방유형": "제거|통합|재배치|AI전환",
+    "asIs": "현재 방식 1줄",
+    "toBe": "바뀐 방식 1줄",
+    "이유": "처방 근거 1줄",
+    "실행가능성": "즉시|협의필요|장기",
+    "통합대상": "통합 처방일 경우 묶을 업무명 (없으면 null)"
+  }
+]
+
+모든 업무에 대해 처방을 제시하되 최소 6개 이상 생성하세요.`;
+
+const PRESCRIPTION_INFO = {
+  '제거': { color: C.제거, bg: '#fef2f2', icon: '🔴', desc: '없애도 되는 업무' },
+  '통합': { color: C.통합, bg: '#fffbeb', icon: '🟡', desc: '다른 업무와 묶을 수 있는 업무' },
+  '재배치': { color: C.재배치, bg: '#eff6ff', icon: '🔵', desc: '순서 변경으로 병목 해소' },
+  'AI전환': { color: C.AI전환, bg: '#f0fdf4', icon: '🟢', desc: 'Agent로 대체 가능' },
+};
+
+const EXEC_INFO = { 즉시: { color: '#10b981', bg: '#f0fdf4' }, 협의필요: { color: C.중, bg: '#fffbeb' }, 장기: { color: C.textMuted, bg: '#f8fafc' } };
+
+function PrescriptionCard({ p, onStatus }) {
+  const info = PRESCRIPTION_INFO[p.처방유형] || {};
+  const exec = EXEC_INFO[p.실행가능성] || {};
+  const isExcluded = p.status === '제외';
+
+  return (
+    <Card style={{
+      borderLeft: `4px solid ${info.color}`, opacity: isExcluded ? 0.4 : 1,
+      transition: 'opacity 0.2s', animation: 'fadeIn 0.3s',
+    }}>
+      <div style={{ padding: '16px 18px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Badge label={`${info.icon} ${p.처방유형}`} color={info.color} bg={info.bg} />
+            <span style={{ fontSize: 14, fontWeight: 700, color: C.text }}>{p.세부}</span>
+          </div>
+          <Badge label={p.실행가능성} color={exec.color} bg={exec.bg} />
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 16px', marginBottom: 12, fontSize: 13 }}>
+          <div><span style={{ color: C.textMuted, fontWeight: 600 }}>As-Is: </span><span style={{ color: C.text }}>{p.asIs}</span></div>
+          <div><span style={{ color: C.AI전환, fontWeight: 600 }}>To-Be: </span><span style={{ color: C.text }}>{p.toBe}</span></div>
+          <div style={{ gridColumn: '1 / -1' }}><span style={{ color: C.textMuted, fontWeight: 600 }}>이유: </span><span style={{ color: C.text }}>{p.이유}</span></div>
+          {p.통합대상 && <div style={{ gridColumn: '1 / -1' }}><span style={{ color: C.통합, fontWeight: 600 }}>통합 대상: </span><span style={{ color: C.text }}>{p.통합대상}</span></div>}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {[
+            { key: 'OK', label: '✅ OK', active: p.status === 'OK', activeStyle: { background: '#10b981', color: '#fff' } },
+            { key: '보류', label: '⏸ 보류', active: p.status === '보류', activeStyle: { background: C.중, color: '#fff' } },
+            { key: '제외', label: '❌ 제외', active: p.status === '제외', activeStyle: { background: C.제거, color: '#fff' } },
+          ].map(({ key, label, active, activeStyle }) => (
+            <button key={key} onClick={() => onStatus(p.task_id, active ? null : key)}
+              style={{
+                padding: '5px 12px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                border: `1px solid ${C.border}`, cursor: 'pointer', transition: 'all 0.15s',
+                fontFamily: 'inherit',
+                ...(active ? activeStyle : { background: '#f8fafc', color: C.textMuted }),
+              }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function Layer3({ confirmedData, diagnosis, prescriptions, setPrescriptions, apiKey, onNext, onBack }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [filter, setFilter] = useState('전체');
+  const tasks = confirmedData.tasks;
+
+  useEffect(() => {
+    if (prescriptions.length === 0) loadPrescriptions();
+  }, []);
+
+  const loadPrescriptions = async () => {
+    setLoading(true); setError('');
+    try {
+      const raw = await callClaude(apiKey, L3_SYSTEM, JSON.stringify({ tasks, diagnosis }));
+      const parsed = extractJson(raw);
+      setPrescriptions(parsed.map(p => ({ ...p, status: null })));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStatus = (taskId, status) => {
+    setPrescriptions(prev => prev.map(p => p.task_id === taskId ? { ...p, status } : p));
+  };
+
+  const okCount = prescriptions.filter(p => p.status === 'OK').length;
+  const okAI = prescriptions.filter(p => p.status === 'OK' && p.처방유형 === 'AI전환').length;
+
+  const filterOpts = ['전체', '제거', '통합', '재배치', 'AI전환', 'OK만'];
+  const filtered = prescriptions.filter(p => {
+    if (filter === '전체') return true;
+    if (filter === 'OK만') return p.status === 'OK';
+    return p.처방유형 === filter;
+  });
+
+  // As-Is vs To-Be summary
+  const okPrescriptions = prescriptions.filter(p => p.status === 'OK');
+  const summary = {
+    주요비율Before: Math.round(tasks.filter(t => t.업무구분 === '주요').length / tasks.length * 100),
+    단순Before: tasks.filter(t => t.업무구분 === '단순').length,
+    AI전환Before: 0,
+    유관대기Before: tasks.filter(t => t.의사결정주체 === '유관부서').length,
+    단순After: Math.max(0, tasks.filter(t => t.업무구분 === '단순').length - okPrescriptions.filter(p => p.처방유형 === '제거' || p.처방유형 === '통합').length),
+    AI전환After: okPrescriptions.filter(p => p.처방유형 === 'AI전환').length,
+    유관대기After: Math.max(0, tasks.filter(t => t.의사결정주체 === '유관부서').length - okPrescriptions.filter(p => ['재배치','통합'].includes(p.처방유형)).length),
+  };
+
+  return (
+    <div style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: C.primary, marginBottom: 6 }}>③ Workflow 재설계</h2>
+          <p style={{ fontSize: 14, color: C.textMuted }}>처방별로 OK / 보류 / 제외를 선택하세요</p>
+        </div>
+        <Button variant="ghost" size="sm" onClick={onBack}>← 대시보드</Button>
+      </div>
+
+      <ErrorBanner message={error} onDismiss={() => setError('')} />
+
+      {loading && (
+        <div style={{ textAlign: 'center', padding: '60px 0' }}>
+          <Spinner size={40} /><p style={{ marginTop: 16, color: C.textMuted }}>처방 생성 중...</p>
+        </div>
+      )}
+
+      {!loading && prescriptions.length > 0 && (
+        <>
+          {/* Filter bar */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+            {filterOpts.map(f => (
+              <button key={f} onClick={() => setFilter(f)} style={{
+                padding: '5px 12px', borderRadius: 20, fontSize: 12, fontWeight: 600,
+                border: `1.5px solid ${filter === f ? C.secondary : C.border}`,
+                background: filter === f ? C.secondary : '#fff', color: filter === f ? '#fff' : C.textMuted,
+                cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s',
+              }}>{f}</button>
+            ))}
+            <span style={{ fontSize: 12, color: C.textMuted, marginLeft: 8 }}>
+              OK: {okCount}건 / 보류: {prescriptions.filter(p => p.status === '보류').length}건 / 제외: {prescriptions.filter(p => p.status === '제외').length}건
+            </span>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginBottom: 24 }}>
+            {filtered.map(p => (
+              <PrescriptionCard key={p.task_id} p={p} onStatus={handleStatus} />
+            ))}
+          </div>
+
+          {/* As-Is vs To-Be summary */}
+          <Card style={{ padding: 20, marginBottom: 24 }}>
+            <h3 style={{ fontSize: 14, fontWeight: 700, color: C.primary, marginBottom: 14 }}>As-Is vs To-Be 요약 (OK 처방 기준)</h3>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {['항목','As-Is','To-Be (OK 처방 적용 시)','변화'].map(h => (
+                    <th key={h} style={{ ...thS, padding: '8px 12px' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { label: '단순/반복 업무', before: `${summary.단순Before}건`, after: `${summary.단순After}건`, delta: summary.단순Before - summary.단순After },
+                  { label: 'AI 전환 대상', before: '0건', after: `${summary.AI전환After}건`, delta: summary.AI전환After },
+                  { label: '유관부서 대기 업무', before: `${summary.유관대기Before}건`, after: `${summary.유관대기After}건`, delta: summary.유관대기Before - summary.유관대기After },
+                ].map(row => (
+                  <tr key={row.label}>
+                    <td style={{ ...tdS, fontWeight: 600 }}>{row.label}</td>
+                    <td style={tdS}>{row.before}</td>
+                    <td style={{ ...tdS, color: C.AI전환, fontWeight: 600 }}>{row.after}</td>
+                    <td style={{ ...tdS, color: row.delta > 0 ? '#10b981' : row.delta < 0 ? C.제거 : C.textMuted, fontWeight: 700 }}>
+                      {row.delta > 0 ? `▼ ${row.delta}건 감소` : row.delta < 0 ? `▲ ${Math.abs(row.delta)}건 증가` : '변화 없음'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12 }}>
+            <Button variant="outline" onClick={loadPrescriptions}>재생성</Button>
+            <Button
+              onClick={onNext} disabled={okAI === 0} size="lg"
+              style={{ background: okAI > 0 ? C.AI전환 : undefined }}
+            >
+              {okAI > 0 ? `🤖 Agent 설계 시작 (AI전환 ${okAI}건) →` : 'AI전환 처방을 OK해주세요'}
+            </Button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── LAYER 4: AGENT DESIGN ────────────────────────────────────────────────────
+const L4_SYSTEM = `당신은 AI 에이전트 설계 전문가입니다. OK된 AI전환 처방 목록을 바탕으로 실행 가능한 AI 에이전트를 설계하세요.
+순수 JSON 배열만 반환하세요 (마크다운 코드블록 없음).
+
+[
+  {
+    "task_id": "task_001",
+    "agent명": "간결한 Agent 이름",
+    "agent유형": "실행형|커뮤니케이션형|보조형",
+    "트리거": "트리거 설명",
+    "입력": "입력 데이터 소스",
+    "행동": "실행 내용",
+    "출력": "결과 전달 방식",
+    "구현도구": "n8n|Make|Zapier|Python|기타",
+    "난이도": "하|중|상",
+    "연동필요": "필요한 연동 방식",
+    "구현가이드": "3~5줄 구현 방향 설명"
+  }
+]`;
+
+const AGENT_TYPES = {
+  실행형: { color: C.secondary, bg: '#eff6ff', icon: '⚡' },
+  커뮤니케이션형: { color: '#7c3aed', bg: '#f5f3ff', icon: '💬' },
+  보조형: { color: '#b45309', bg: '#fffbeb', icon: '🤝' },
+};
+
+const DIFF_STARS = { 하: '★☆☆', 중: '★★☆', 상: '★★★' };
+const TOOL_COLORS = { n8n: '#ea580c', Make: '#6366f1', Zapier: '#ff4a00', Python: '#3b82f6', 기타: '#64748b' };
+
+const FIELD_QUESTIONS = {
+  트리거: '언제 실행할까요?\n① 매일 정해진 시간\n② 특정 조건 발생 시\n③ 수동 실행',
+  입력: '어떤 데이터를 가져올까요?\n① 사내 시스템\n② 외부 사이트\n③ 이메일·메신저',
+  행동: '무엇을 할까요?\n① 자동 집계·계산\n② 문서·보고서 생성\n③ 알림 발송\n④ 승인 요청',
+  출력: '결과를 어디로 보낼까요?\n① 이메일\n② 카카오톡·Teams\n③ 공유 문서\n④ 대시보드',
+};
+
+function AgentCard({ agent, apiKey, onUpdate }) {
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [chatHistory, setChatHistory] = useState([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [activeField, setActiveField] = useState(null);
+  const chatEndRef = useRef(null);
+  const info = AGENT_TYPES[agent.agent유형] || AGENT_TYPES['보조형'];
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory]);
+
+  const openFieldEdit = (field) => {
+    setActiveField(field);
+    setChatOpen(true);
+    const q = FIELD_QUESTIONS[field];
+    if (q && !chatHistory.find(m => m.content.startsWith(q.split('\n')[0]))) {
+      setChatHistory(prev => [...prev, { role: 'assistant', content: q }]);
+    }
+  };
+
+  const sendChat = async () => {
+    if (!chatInput.trim() || chatLoading) return;
+    const userMsg = chatInput.trim();
+    setChatInput('');
+    setChatHistory(prev => [...prev, { role: 'user', content: userMsg }]);
+    setChatLoading(true);
+    try {
+      const sys = `당신은 AI 에이전트 설계 어시스턴트입니다.
+현재 설계 중인 에이전트: ${JSON.stringify(agent)}
+수정 요청 항목: ${activeField || '미지정'}
+
+사용자 요청에 따라 에이전트 필드를 수정하고 다음 JSON으로만 응답하세요:
+{"updatedField":"필드명","updatedValue":"새값","explanation":"변경 이유(한국어)"}`;
+      const raw = await callClaude(apiKey, sys, userMsg, 512);
+      const result = extractJson(raw);
+      setChatHistory(prev => [...prev, { role: 'assistant', content: `✅ **${result.updatedField}** 수정됨\n${result.explanation}` }]);
+      onUpdate(agent.task_id, result.updatedField, result.updatedValue);
+    } catch (e) {
+      setChatHistory(prev => [...prev, { role: 'assistant', content: `오류: ${e.message}` }]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const copySpec = () => {
+    const text = `=== ${agent.agent명} (${agent.agent유형}) ===
+대상 업무: ${agent.세부 || agent.task_id}
+트리거: ${agent.트리거}
+입력: ${agent.입력}
+행동: ${agent.행동}
+출력: ${agent.출력}
+구현도구: ${agent.구현도구} | 난이도: ${agent.난이도} | 연동: ${agent.연동필요}
+
+[구현 가이드]
+${agent.구현가이드}`;
+    navigator.clipboard.writeText(text).catch(() => {});
+  };
+
+  return (
+    <Card style={{ borderTop: `3px solid ${info.color}`, animation: 'fadeIn 0.3s' }}>
+      <div style={{ padding: '18px 20px' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Badge label={`${info.icon} ${agent.agent유형}`} color={info.color} bg={info.bg} />
+            <span style={{ fontSize: 15, fontWeight: 700, color: C.primary }}>{agent.agent명}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button onClick={copySpec} title="명세 복사"
+              style={{ background: '#f1f5f9', border: 'none', borderRadius: 6, padding: '4px 8px', cursor: 'pointer', fontSize: 13 }}>
+              📋
+            </button>
+          </div>
+        </div>
+
+        {/* Fields */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px', marginBottom: 14 }}>
+          {[
+            { field: '트리거', icon: '🕐', label: '트리거' },
+            { field: '입력', icon: '📥', label: '입력' },
+            { field: '행동', icon: '⚙️', label: '행동' },
+            { field: '출력', icon: '📤', label: '출력' },
+          ].map(({ field, icon, label }) => (
+            <div key={field}
+              onClick={() => openFieldEdit(field)}
+              style={{ cursor: 'pointer', padding: '8px 10px', borderRadius: 8, background: '#f8fafc', border: `1px solid ${C.border}`, transition: 'border-color 0.15s' }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = info.color}
+              onMouseLeave={e => e.currentTarget.style.borderColor = C.border}
+            >
+              <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 3 }}>{icon} {label} <span style={{ color: info.color }}>✏️</span></div>
+              <div style={{ fontSize: 12, color: C.text, lineHeight: 1.5 }}>{agent[field]}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Meta */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: chatOpen ? 14 : 0 }}>
+          <Badge label={`🔧 ${agent.구현도구}`} color={TOOL_COLORS[agent.구현도구] || C.textMuted} />
+          <Badge label={`난이도 ${DIFF_STARS[agent.난이도]}`} color={C.textMuted} bg="#f1f5f9" />
+          <Badge label={`🔗 ${agent.연동필요}`} color={C.textMuted} bg="#f1f5f9" />
+        </div>
+
+        {/* Impl guide */}
+        <div style={{ marginTop: 10, padding: '10px 12px', background: '#f8fafc', borderRadius: 8, borderLeft: `3px solid ${info.color}` }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, marginBottom: 4 }}>구현 가이드</div>
+          <div style={{ fontSize: 12, color: C.text, lineHeight: 1.7, whiteSpace: 'pre-line' }}>{agent.구현가이드}</div>
+        </div>
+
+        {/* Chat toggle */}
+        <button onClick={() => setChatOpen(s => !s)}
+          style={{ marginTop: 12, background: 'none', border: `1px solid ${C.border}`, borderRadius: 6, padding: '5px 12px', fontSize: 12, color: C.textMuted, cursor: 'pointer', fontFamily: 'inherit', transition: 'all 0.15s' }}
+          onMouseEnter={e => { e.target.style.borderColor = info.color; e.target.style.color = info.color; }}
+          onMouseLeave={e => { e.target.style.borderColor = C.border; e.target.style.color = C.textMuted; }}>
+          {chatOpen ? '▲ 수정 채팅 닫기' : '✏️ 필드 수정 (AI와 대화)'}
+        </button>
+
+        {/* Chat section */}
+        {chatOpen && (
+          <div style={{ marginTop: 14, border: `1px solid ${C.border}`, borderRadius: 8, overflow: 'hidden', animation: 'fadeIn 0.2s' }}>
+            <div style={{ background: '#f8fafc', padding: '8px 12px', fontSize: 12, color: C.textMuted, borderBottom: `1px solid ${C.border}` }}>
+              {activeField ? `${activeField} 필드 수정 중 — 다른 항목을 클릭하면 해당 항목을 수정합니다` : '카드 위 항목을 클릭하여 수정하세요'}
+            </div>
+            <div style={{ height: 180, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {chatHistory.map((m, i) => (
+                <div key={i} style={{
+                  alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                  background: m.role === 'user' ? C.secondary : '#f1f5f9',
+                  color: m.role === 'user' ? '#fff' : C.text,
+                  padding: '8px 12px', borderRadius: 10, maxWidth: '85%', fontSize: 13, lineHeight: 1.5,
+                  whiteSpace: 'pre-line',
+                }}>{m.content}</div>
+              ))}
+              {chatLoading && (
+                <div style={{ alignSelf: 'flex-start', background: '#f1f5f9', padding: '8px 12px', borderRadius: 10, fontSize: 13 }}>
+                  <Spinner size={14} color={C.textMuted} />
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+            <div style={{ display: 'flex', padding: '8px 12px', gap: 8, borderTop: `1px solid ${C.border}` }}>
+              <input
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendChat()}
+                placeholder="수정 요청을 입력하세요... (Enter)"
+                style={{ flex: 1, padding: '7px 10px', borderRadius: 6, border: `1px solid ${C.border}`, fontSize: 13, fontFamily: 'inherit', outline: 'none' }}
+                onFocus={e => e.target.style.borderColor = info.color}
+                onBlur={e => e.target.style.borderColor = C.border}
+              />
+              <Button onClick={sendChat} disabled={!chatInput.trim() || chatLoading} size="sm">전송</Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function Layer4({ confirmedData, prescriptions, agents, setAgents, apiKey, onBack }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const okAI = prescriptions.filter(p => p.status === 'OK' && p.처방유형 === 'AI전환');
+
+  useEffect(() => {
+    if (agents.length === 0) loadAgents();
+  }, []);
+
+  const loadAgents = async () => {
+    setLoading(true); setError('');
+    try {
+      const input = okAI.map(p => {
+        const task = confirmedData.tasks.find(t => t.id === p.task_id);
+        return { ...p, 의사결정주체: task?.의사결정주체 || '본인' };
+      });
+      const raw = await callClaude(apiKey, L4_SYSTEM, JSON.stringify(input));
+      setAgents(extractJson(raw));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUpdate = (taskId, field, value) => {
+    setAgents(prev => prev.map(a => a.task_id === taskId ? { ...a, [field]: value } : a));
+  };
+
+  const copyAll = () => {
+    const text = agents.map(a =>
+      `=== ${a.agent명} (${a.agent유형}) ===\n트리거: ${a.트리거}\n입력: ${a.입력}\n행동: ${a.행동}\n출력: ${a.출력}\n구현도구: ${a.구현도구} | 난이도: ${a.난이도}\n연동: ${a.연동필요}\n\n구현 가이드:\n${a.구현가이드}\n`
+    ).join('\n' + '─'.repeat(40) + '\n\n');
+    navigator.clipboard.writeText(text).catch(() => {});
+    alert('전체 Agent 명세가 클립보드에 복사되었습니다.');
+  };
+
+  return (
+    <div style={{ maxWidth: 1200, margin: '0 auto', padding: '32px 24px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24 }}>
+        <div>
+          <h2 style={{ fontSize: 22, fontWeight: 700, color: C.primary, marginBottom: 6 }}>④ Agent 설계</h2>
+          <p style={{ fontSize: 14, color: C.textMuted }}>AI전환 처방 {okAI.length}건 → Agent 설계 초안 자동 생성</p>
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <Button variant="ghost" size="sm" onClick={onBack}>← 처방 수정</Button>
+          {agents.length > 0 && <Button variant="outline" size="sm" onClick={copyAll}>📋 전체 명세 복사</Button>}
+        </div>
+      </div>
+
+      <ErrorBanner message={error} onDismiss={() => setError('')} />
+
+      {loading && (
+        <div style={{ textAlign: 'center', padding: '60px 0' }}>
+          <Spinner size={40} /><p style={{ marginTop: 16, color: C.textMuted }}>Agent 설계 초안 생성 중...</p>
+        </div>
+      )}
+
+      {!loading && agents.length > 0 && (
+        <>
+          <div style={{ background: '#eff6ff', border: `1px solid #bfdbfe`, borderRadius: 10, padding: '12px 16px', marginBottom: 20, fontSize: 13, color: '#1e40af' }}>
+            💡 <strong>사용 방법</strong>: 각 카드의 항목(트리거·입력·행동·출력)을 클릭하면 AI와 대화로 수정할 수 있습니다.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(520px, 1fr))', gap: 20 }}>
+            {agents.map(a => (
+              <AgentCard key={a.task_id} agent={a} apiKey={apiKey} onUpdate={handleUpdate} />
+            ))}
+          </div>
+          <div style={{ marginTop: 28, textAlign: 'center', padding: '24px 0', borderTop: `1px solid ${C.border}` }}>
+            <p style={{ fontSize: 16, fontWeight: 700, color: C.primary, marginBottom: 8 }}>🎉 Agent 설계 완료!</p>
+            <p style={{ fontSize: 14, color: C.textMuted, marginBottom: 16 }}>위 카드를 개발팀에 전달하거나 직접 구현을 시작하세요.</p>
+            <Button onClick={copyAll} size="lg">📋 전체 Agent 명세서 복사 (개발팀 전달용)</Button>
+          </div>
+        </>
+      )}
+
+      {!loading && agents.length === 0 && !error && (
+        <div style={{ textAlign: 'center', padding: '60px 0', color: C.textMuted }}>
+          <p style={{ fontSize: 48, marginBottom: 16 }}>🤖</p>
+          <p>Agent 설계 데이터가 없습니다.</p>
+          <Button onClick={loadAgents} style={{ marginTop: 16 }}>다시 생성</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ROOT APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [apiKey, setApiKey]               = useState('');
+  const [layer, setLayer]                 = useState(1);
+  const [confirmedData, setConfirmedData] = useState(null);
+  const [diagnosis, setDiagnosis]         = useState(null);
+  const [prescriptions, setPrescriptions] = useState([]);
+  const [agents, setAgents]               = useState([]);
+
+  const handleConfirm = (data) => {
+    setConfirmedData(data);
+    setDiagnosis(null);
+    setPrescriptions([]);
+    setAgents([]);
+    setLayer(2);
+  };
+
+  if (!apiKey) return <ApiKeyScreen onSubmit={setApiKey} />;
+
+  return (
+    <div style={{ minHeight: '100vh', background: C.bg }}>
+      <Header current={layer} onNavigate={setLayer} />
+      {layer === 1 && <Layer1 apiKey={apiKey} onConfirm={handleConfirm} />}
+      {layer === 2 && confirmedData && (
+        <Layer2
+          confirmedData={confirmedData} apiKey={apiKey}
+          diagnosis={diagnosis} setDiagnosis={setDiagnosis}
+          onNext={() => setLayer(3)} onBack={() => setLayer(1)}
+        />
+      )}
+      {layer === 3 && confirmedData && (
+        <Layer3
+          confirmedData={confirmedData} diagnosis={diagnosis}
+          prescriptions={prescriptions} setPrescriptions={setPrescriptions}
+          apiKey={apiKey}
+          onNext={() => setLayer(4)} onBack={() => setLayer(2)}
+        />
+      )}
+      {layer === 4 && confirmedData && (
+        <Layer4
+          confirmedData={confirmedData} prescriptions={prescriptions}
+          agents={agents} setAgents={setAgents}
+          apiKey={apiKey} onBack={() => setLayer(3)}
+        />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
