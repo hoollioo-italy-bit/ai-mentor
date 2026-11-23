@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body { @apply text-slate-800 antialiased; }
+  /* 접근성: 색상만으로 정보를 전달하지 않도록 배지에는 항상 라벨 텍스트를 병기한다(§8.2) */
+}
+
+@layer components {
+  .card { @apply rounded-xl border border-slate-200 bg-white shadow-sm; }
+  .card-pad { @apply p-4 sm:p-5; }
+  .chip { @apply inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium; }
+  .btn { @apply inline-flex items-center justify-center rounded-lg px-3 py-2 text-sm font-medium transition; }
+  .btn-primary { @apply btn bg-slate-900 text-white hover:bg-slate-700 disabled:opacity-40; }
+  .btn-ghost { @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50; }
+  .label { @apply text-xs font-medium text-slate-500; }
+  .num { @apply font-mono tabular-nums; }
+  .chart-scroll { @apply overflow-x-auto; }
+}

@@ -1,0 +1,30 @@
+{
+  "name": "kr-stock-advisor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "국내 주식 차트분석 · 모의투자 웹앱 (Cloudflare Workers + Pages)",
+  "workspaces": [
+    "shared",
+    "worker",
+    "web"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:worker": "npm -w worker run dev",
+    "dev:web": "npm -w web run dev",
+    "build": "npm -w shared run build && npm -w web run build",
+    "test": "npm -w worker run test",
+    "typecheck": "npm -w shared run typecheck && npm -w worker run typecheck && npm -w web run typecheck",
+    "db:migrate:local": "wrangler d1 migrations apply kr-stock-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply kr-stock-db --remote",
+    "deploy:worker": "wrangler deploy",
+    "verify:provider": "tsx scripts/verify-provider.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "^4.166.0",
+    "tsx": "^4.19.2"
+  }
+}
